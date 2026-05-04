@@ -489,8 +489,11 @@ static ggml_tensor * dsv4_build_compressor_prefill(
     const int64_t n_kv = coff * n_embd_head;
     const int64_t cutoff = n_comp * compress_ratio;
 
-    ggml_tensor * kv = ggml_mul_mat(ctx, wkv, x);       // [coff*head_dim, n_tokens]
-    ggml_tensor * score = ggml_mul_mat(ctx, wgate, x);  // [coff*head_dim, n_tokens]
+    // Fuse wkv + wgate matmuls: single larger matmul instead of two small ones
+    ggml_tensor * wkv_wgate = ggml_cont(ctx, ggml_concat(ctx, wkv, wgate, 0)); // [2*n_kv, n_embd]
+    ggml_tensor * kv_score = ggml_mul_mat(ctx, wkv_wgate, x);                  // [2*n_kv, n_tokens]
+    ggml_tensor * kv    = ggml_view_2d(ctx, kv_score, n_kv, n_tokens, kv_score->nb[1], 0);
+    ggml_tensor * score = ggml_view_2d(ctx, kv_score, n_kv, n_tokens, kv_score->nb[1], n_kv*kv_score->nb[0]);
 
     kv = ggml_view_3d(ctx, kv, n_kv, compress_ratio, n_comp,
             kv->nb[1],
