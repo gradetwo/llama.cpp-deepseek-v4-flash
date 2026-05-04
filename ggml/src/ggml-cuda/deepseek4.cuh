@@ -30,30 +30,38 @@ static __device__ void rope_yarn(
     }
 }
 
-static __device__ float dsv4_e4m3fn_value(int i) {
-    const int exp  = (i >> 3) & 0x0f;
-    const int mant = i & 0x07;
-    return exp == 0
-        ? __int2float_rn(mant) * 0.001953125f
-        : (1.0f + __int2float_rn(mant) * 0.125f) * exp2f(__int2float_rn(exp - 7));
-}
-
 static __device__ float dsv4_e4m3fn_dequant(float x) {
-    const float sign = x < 0.0f ? -1.0f : 1.0f;
-    const float ax = min(fabsf(x), 448.0f);
+    float sign = x < 0.0f ? -1.0f : 1.0f;
+    float ax = fminf(fabsf(x), 448.0f);
+    if (ax == 0.0f) return 0.0f;
 
-    int best = 0;
-    float best_diff = ax;
-    for (int i = 1; i < 127; ++i) {
-        const float val = dsv4_e4m3fn_value(i);
-        const float diff = fabsf(ax - val);
-        if (diff < best_diff || (diff == best_diff && (i & 1) == 0 && (best & 1) != 0)) {
-            best = i;
-            best_diff = diff;
-        }
+    int ix = __float_as_int(ax);
+    int e = ((ix >> 23) & 0xff) - 127; // actual exponent
+
+    int ef, mant3;
+
+    if (e < -6) {
+        // Subnormal range: 0, 2^-9, 2*2^-9, ..., 7*2^-9
+        float m = ax * 512.0f; // ax / 2^-9
+        mant3 = __float2int_rn(m);
+        if (mant3 > 7) mant3 = 7;
+        ef = 0;
+    } else {
+        if (e > 8) e = 8;
+        ef = e + 7;
+        float scale = ldexpf(1.0f, e);
+        float mant_raw = ax / scale - 1.0f;
+        mant3 = __float2int_rn(mant_raw * 8.0f);
+        if (mant3 >= 8) { mant3 = 0; ef++; }
+        if (ef > 15) { ef = 15; mant3 = 7; }
+        if (mant3 < 0) mant3 = 0;
     }
 
-    return sign * dsv4_e4m3fn_value(best);
+    float val = (ef == 0)
+        ? (float)mant3 * 0.001953125f          // mant * 2^-9
+        : ldexpf(1.0f + (float)mant3 * 0.125f, ef - 7);
+
+    return sign * val;
 }
 
 void ggml_cuda_op_dsv4_hc_split_sinkhorn(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

@@ -5,7 +5,7 @@
 // OP 1: dsv4_hc_split_sinkhorn
 // ============================================================================
 
-__global__ void dsv4_hc_split_sinkhorn_f32(
+__global__ void __launch_bounds__(256, 4) dsv4_hc_split_sinkhorn_f32(
         const float * __restrict__ mixes,
         const float * __restrict__ scale_data,
         const float * __restrict__ base_data,
@@ -242,7 +242,10 @@ void ggml_cuda_op_dsv4_hc_split_sinkhorn(ggml_backend_cuda_context & ctx, ggml_t
 
     cudaStream_t stream = ctx.stream();
 
-    const int block_size = 256;
+    // Adaptive block size: for tiny rows (decode), use minimal threads
+    const int block_size = n_rows <= 4   ? max(1, (int)n_rows) :
+                           n_rows <= 32  ? 32 :
+                           256;
     const int grid_size  = (n_rows + block_size - 1) / block_size;
 
     dsv4_hc_split_sinkhorn_f32<<<grid_size, block_size, 0, stream>>>(
@@ -259,7 +262,7 @@ void ggml_cuda_op_dsv4_hc_split_sinkhorn(ggml_backend_cuda_context & ctx, ggml_t
 // OP 2: dsv4_hc_weighted_sum
 // ============================================================================
 
-__global__ void dsv4_hc_weighted_sum_f32(
+__global__ void __launch_bounds__(256, 4) dsv4_hc_weighted_sum_f32(
         const char * __restrict__ x,
         const char * __restrict__ weights,
         char * __restrict__ dst,
@@ -280,10 +283,22 @@ __global__ void dsv4_hc_weighted_sum_f32(
     const int64_t t = i / n_embd;
 
     float acc = 0.0f;
-    for (int64_t h = 0; h < n_hc; ++h) {
-        const float xv = *(const float *) (x + d * nb_x0 + h * nb_x1 + t * nb_x2);
-        const float wv = *(const float *) (weights + h * nb_w0 + t * nb_w1);
-        acc += xv * wv;
+    if (n_hc == 4) {
+        const float xv0 = *(const float *) (x + d * nb_x0 + 0 * nb_x1 + t * nb_x2);
+        const float xv1 = *(const float *) (x + d * nb_x0 + 1 * nb_x1 + t * nb_x2);
+        const float xv2 = *(const float *) (x + d * nb_x0 + 2 * nb_x1 + t * nb_x2);
+        const float xv3 = *(const float *) (x + d * nb_x0 + 3 * nb_x1 + t * nb_x2);
+        const float wv0 = *(const float *) (weights + 0 * nb_w0 + t * nb_w1);
+        const float wv1 = *(const float *) (weights + 1 * nb_w0 + t * nb_w1);
+        const float wv2 = *(const float *) (weights + 2 * nb_w0 + t * nb_w1);
+        const float wv3 = *(const float *) (weights + 3 * nb_w0 + t * nb_w1);
+        acc = xv0 * wv0 + xv1 * wv1 + xv2 * wv2 + xv3 * wv3;
+    } else {
+        for (int64_t h = 0; h < n_hc; ++h) {
+            const float xv = *(const float *) (x + d * nb_x0 + h * nb_x1 + t * nb_x2);
+            const float wv = *(const float *) (weights + h * nb_w0 + t * nb_w1);
+            acc += xv * wv;
+        }
     }
 
     *(float *) (dst + d * nb_d0 + t * nb_d1) = acc;
@@ -308,7 +323,9 @@ void ggml_cuda_op_dsv4_hc_weighted_sum(ggml_backend_cuda_context & ctx, ggml_ten
 
     cudaStream_t stream = ctx.stream();
 
-    const int block_size = 256;
+    const int block_size = n_elem <= 64   ? max(1, (int)n_elem) :
+                           n_elem <= 1024 ? 128 :
+                           256;
     const int grid_size  = (n_elem + block_size - 1) / block_size;
 
     dsv4_hc_weighted_sum_f32<<<grid_size, block_size, 0, stream>>>(
@@ -325,7 +342,7 @@ void ggml_cuda_op_dsv4_hc_weighted_sum(ggml_backend_cuda_context & ctx, ggml_ten
 // OP 3: dsv4_hc_expand
 // ============================================================================
 
-__global__ void dsv4_hc_expand_f32(
+__global__ void __launch_bounds__(256, 4) dsv4_hc_expand_f32(
         const char * __restrict__ block_out,
         const char * __restrict__ residual,
         const char * __restrict__ post,
@@ -355,10 +372,22 @@ __global__ void dsv4_hc_expand_f32(
     const float post_v  = *(const float *) (post      + dst_hc * nb_post0 + t * nb_post1);
 
     float acc = block_v * post_v;
-    for (int64_t src_hc = 0; src_hc < n_hc; ++src_hc) {
-        const float comb_v = *(const float *) (comb     + dst_hc * nb_comb0 + src_hc * nb_comb1 + t * nb_comb2);
-        const float res_v  = *(const float *) (residual + d * nb_res0 + src_hc * nb_res1 + t * nb_res2);
-        acc += comb_v * res_v;
+    if (n_hc == 4) {
+        const float cv0 = *(const float *) (comb     + dst_hc * nb_comb0 + 0 * nb_comb1 + t * nb_comb2);
+        const float cv1 = *(const float *) (comb     + dst_hc * nb_comb0 + 1 * nb_comb1 + t * nb_comb2);
+        const float cv2 = *(const float *) (comb     + dst_hc * nb_comb0 + 2 * nb_comb1 + t * nb_comb2);
+        const float cv3 = *(const float *) (comb     + dst_hc * nb_comb0 + 3 * nb_comb1 + t * nb_comb2);
+        const float rv0 = *(const float *) (residual + d * nb_res0 + 0 * nb_res1 + t * nb_res2);
+        const float rv1 = *(const float *) (residual + d * nb_res0 + 1 * nb_res1 + t * nb_res2);
+        const float rv2 = *(const float *) (residual + d * nb_res0 + 2 * nb_res1 + t * nb_res2);
+        const float rv3 = *(const float *) (residual + d * nb_res0 + 3 * nb_res1 + t * nb_res2);
+        acc += cv0 * rv0 + cv1 * rv1 + cv2 * rv2 + cv3 * rv3;
+    } else {
+        for (int64_t src_hc = 0; src_hc < n_hc; ++src_hc) {
+            const float comb_v = *(const float *) (comb     + dst_hc * nb_comb0 + src_hc * nb_comb1 + t * nb_comb2);
+            const float res_v  = *(const float *) (residual + d * nb_res0 + src_hc * nb_res1 + t * nb_res2);
+            acc += comb_v * res_v;
+        }
     }
 
     *(float *) (dst + d * nb_d0 + dst_hc * nb_d1 + t * nb_d2) = acc;
@@ -393,7 +422,9 @@ void ggml_cuda_op_dsv4_hc_expand(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     cudaStream_t stream = ctx.stream();
 
-    const int block_size = 256;
+    const int block_size = n_elem <= 64   ? max(1, (int)n_elem) :
+                           n_elem <= 1024 ? 128 :
+                           256;
     const int grid_size  = (n_elem + block_size - 1) / block_size;
 
     dsv4_hc_expand_f32<<<grid_size, block_size, 0, stream>>>(
@@ -414,7 +445,7 @@ void ggml_cuda_op_dsv4_hc_expand(ggml_backend_cuda_context & ctx, ggml_tensor * 
 // OP 4: dsv4_fp8_kv_quantize
 // ============================================================================
 
-__global__ void dsv4_fp8_kv_quantize_f32(
+__global__ void __launch_bounds__(64, 8) dsv4_fp8_kv_quantize_f32(
         const char * __restrict__ src0,
         char * __restrict__ dst,
         const int64_t head_dim,
@@ -462,7 +493,7 @@ __global__ void dsv4_fp8_kv_quantize_f32(
             const float q = dsv4_e4m3fn_dequant(clamped) * scale;
             *(float *) (dst_row + (off + tid) * nb_d0) = q;
         }
-        __syncthreads();
+        // No barrier needed: next iteration writes to scratch[], not reading dst[]
     }
 
     for (int64_t i = n_nope + threadIdx.x; i < head_dim; i += 64) {
@@ -507,7 +538,7 @@ void ggml_cuda_op_dsv4_fp8_kv_quantize(ggml_backend_cuda_context & ctx, ggml_ten
 // ============================================================================
 
 template <bool forward, bool has_ff>
-__global__ void dsv4_rope_tail_f32(
+__global__ void __launch_bounds__(256, 4) dsv4_rope_tail_f32(
         const char * __restrict__ src0,
         const int32_t * __restrict__ pos,
         const float * __restrict__ freq_factors,
@@ -542,8 +573,6 @@ __global__ void dsv4_rope_tail_f32(
     for (int64_t i0 = threadIdx.x; i0 < n_nope; i0 += blockDim.x) {
         *(float *) (dst_row + i0 * nb_d0) = *(const float *) (src_row + i0 * nb00);
     }
-
-    __syncthreads();
 
     if (mode == GGML_ROPE_TYPE_NORMAL) {
         // Adjacent pairs: (n_nope, n_nope+1), (n_nope+2, n_nope+3), ...
