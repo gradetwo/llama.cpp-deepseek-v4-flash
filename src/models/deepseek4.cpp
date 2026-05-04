@@ -1012,7 +1012,7 @@ llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_gr
 
         if (compress_ratio == 0) {
             ggml_tensor * k_cache = mctx_swa->get_k(ctx0, il);
-            k_cache = ggml_reshape_3d(ctx0, k_cache, n_embd_head_k, 1, k_cache->ne[2]);
+            k_cache = ggml_reshape_3d(ctx0, k_cache, n_embd_head_k, 1, ggml_nrows(k_cache));
             cur = build_attn_mha(q, k_cache, k_cache, nullptr, inp_attn->get_kq_mask_swa(),
                     layer.attn_sinks, nullptr, kq_scale, il);
             cb(cur, "kqv_out", il);
@@ -1195,7 +1195,7 @@ llm_build_deepseek4::llm_build_deepseek4(const llama_model & model, const llm_gr
                 }
 
                 ggml_tensor * k_raw = mctx_swa->get_k(ctx0, il);
-                k_raw = ggml_reshape_3d(ctx0, k_raw, n_embd_head_k, 1, k_raw->ne[2]);
+                k_raw = ggml_reshape_3d(ctx0, k_raw, n_embd_head_k, 1, ggml_nrows(k_raw));
                 k_all = k_raw;
                 v_all = k_raw;
                 attn_mask = inp_attn->self_kq_mask_swa;
